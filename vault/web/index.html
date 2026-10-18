@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI Workspace Vault</title>
+<style>
+:root{--bg:#fafafa;--fg:#1b1d21;--mut:#6b7280;--card:#fff;--line:#e5e7eb;--acc:#2f5bea;--ok:#15803d;--bad:#b91c1c;--warn:#b45309}
+@media(prefers-color-scheme:dark){:root{--bg:#14161a;--fg:#e8eaed;--mut:#9aa0a6;--card:#1d2026;--line:#2c3038;--acc:#7c9cff;--ok:#4ade80;--bad:#f87171;--warn:#fbbf24}}
+*{box-sizing:border-box}body{margin:0;font:15px/1.5 system-ui,sans-serif;background:var(--bg);color:var(--fg)}
+header{display:flex;gap:12px;align-items:center;padding:10px 18px;border-bottom:1px solid var(--line);background:var(--card)}
+header h1{font-size:16px;margin:0}header .sp{flex:1}
+input,button,select{font:inherit;padding:7px 11px;border:1px solid var(--line);border-radius:7px;background:var(--card);color:var(--fg)}
+button{cursor:pointer}button.p{background:var(--acc);color:#fff;border-color:var(--acc)}
+#search{width:100%;max-width:520px}
+main{display:grid;grid-template-columns:300px 1fr;height:calc(100vh - 54px)}
+aside{border-right:1px solid var(--line);overflow:auto;padding:10px}
+section{overflow:auto;padding:18px 26px}
+.item{padding:8px 10px;border-radius:7px;cursor:pointer}.item:hover,.item.sel{background:var(--card);outline:1px solid var(--line)}
+.item small{color:var(--mut);display:block}
+.proj{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--mut);margin:14px 6px 4px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:14px}
+.msg{margin:14px 0;padding:10px 14px;border-radius:10px;border:1px solid var(--line);background:var(--card);white-space:pre-wrap;word-wrap:break-word}
+.msg.user{border-left:3px solid var(--acc)}.role{font-size:12px;color:var(--mut);margin-bottom:4px}
+mark{background:#fde68a;color:#000;border-radius:3px}
+.ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}
+.center{max-width:380px;margin:12vh auto;text-align:center}.center input{width:100%;margin:6px 0}
+table{border-collapse:collapse;width:100%}td,th{text-align:left;padding:5px 8px;border-bottom:1px solid var(--line)}
+@media(max-width:760px){main{grid-template-columns:1fr}aside{max-height:35vh;border-right:0;border-bottom:1px solid var(--line)}}
+</style></head><body>
+<div id="app"></div>
+<script>
+const TOKEN="__API_TOKEN__";
+const $=s=>document.querySelector(s);
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const hl=s=>esc(s).replace(/\[\[/g,"<mark>").replace(/\]\]/g,"</mark>");
+async function api(path,opts={}){
+  const r=await fetch("/api/"+path,{...opts,headers:{"X-AWV-Token":TOKEN,...(opts.headers||{})}});
+  if(opts.raw)return r;
+  const j=await r.json();if(!r.ok)throw new Error(j.error||r.status);return j;}
+const post=(p,b)=>api(p,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b||{})});
+let items=[],sel=null;
+
+async function boot(){
+  const s=await api("state");
+  if(!s.unlocked)return renderLogin(s.exists);
+  renderMain();
+}
+function renderLogin(exists){
+  $("#app").innerHTML=`<div class="center"><h2>AI Workspace Vault</h2>
+  <p class="mut">${exists?"Inserisci la passphrase per aprire il vault.":"Nessun vault trovato. Scegli una passphrase (min. 10 caratteri). <b>Se la perdi, i dati non sono recuperabili.</b>"}</p>
+  <input id="pw" type="password" placeholder="Passphrase" autofocus>
+  <button class="p" id="go">${exists?"Apri":"Crea vault"}</button><p id="err" class="bad"></p></div>`;
+  const go=async()=>{try{await post(exists?"unlock":"init",{passphrase:$("#pw").value});boot()}catch(e){$("#err").textContent=e.message}};
+  $("#go").onclick=go;$("#pw").onkeydown=e=>e.key==="Enter"&&go();
+}
+async function renderMain(){
+  $("#app").innerHTML=`<header><h1>🔐 AI Workspace Vault</h1>
+  <input id="search" type="search" placeholder="Cerca in tutto il vault (conversazioni, file, progetti)…">
+  <span class="sp"></span><button id="bStatus">Stato backup</button><label><button onclick="this.nextElementSibling.click()">Importa</button><input type="file" hidden id="up" accept=".json,.zip"></label>
+  <button id="bExp">Esporta</button><button id="bLock">Blocca</button></header>
+  <main><aside id="list"></aside><section id="view"></section></main>`;
+  $("#search").oninput=debounce(doSearch,200);
+  $("#bStatus").onclick=showStatus;$("#bLock").onclick=async()=>{await post("lock");boot()};
+  $("#bExp").onclick=()=>exportPkg();
+  $("#up").onchange=async e=>{const f=e.target.files[0];if(!f)return;
+    $("#view").innerHTML="<p>Importazione in corso…</p>";
+    try{const r=await api("import?filename="+encodeURIComponent(f.name),{method:"POST",body:f});await loadList();showReport(r)}
+    catch(err){$("#view").innerHTML=`<p class="bad">${esc(err.message)}</p>`}};
+  await loadList();showStatus();
+}
+const debounce=(f,t)=>{let h;return(...a)=>{clearTimeout(h);h=setTimeout(()=>f(...a),t)}};
+async function loadList(){
+  items=(await api("list")).items;const by={};
+  items.forEach(i=>(by[i.project||"Senza progetto"]??=[]).push(i));
+  $("#list").innerHTML=Object.keys(by).sort().map(p=>`<div class="proj">${esc(p)}</div>`+by[p].map(i=>
+   `<div class="item" data-id="${i.id}" data-k="${i.kind}"><b>${i.kind==="file"?"📎 ":""}${esc(i.title||i.name)}</b><small>${esc((i.updated||i.created||"").slice(0,10))} ${i.kind==="conversation"?i.n_messages+" messaggi":""} ${i.n_missing_attachments?'<span class="warn">· '+i.n_missing_attachments+' allegati non acquisiti</span>':""}</small></div>`).join("")).join("")||'<p class="mut" style="padding:8px">Vault vuoto. Usa “Importa”.</p>';
+  document.querySelectorAll(".item").forEach(e=>e.onclick=()=>open(e.dataset.id,e.dataset.k));
+}
+async function open(id,kind){
+  document.querySelectorAll(".item").forEach(e=>e.classList.toggle("sel",e.dataset.id===id));
+  if(kind==="file"){const r=await api("file?id="+id,{raw:true});const b=await r.blob();const a=document.createElement("a");a.href=URL.createObjectURL(b);a.download=items.find(i=>i.id===id).name;a.click();return}
+  const c=await api("conversation?id="+id);
+  $("#view").innerHTML=`<h2>${esc(c.title)}</h2><p class="mut">${esc(c.provider)} · ${esc(c.project||"senza progetto")} · ${esc(c.created)}</p>`+
+   c.messages.map(m=>`<div class="msg ${esc(m.role)}"><div class="role">${esc(m.role)} ${esc(m.time||"")}</div>${esc(m.text)}${(m.attachments||[]).map(a=>
+   a.item_id?` <br>📎 <a href="#" onclick="open('${a.item_id}','file');return false">${esc(a.name)}</a>`:`<br><span class="warn">📎 ${esc(a.name)} (non acquisito)</span>`).join("")}</div>`).join("");
+}
+async function doSearch(){
+  const q=$("#search").value.trim();if(!q){$("#view").innerHTML="";return}
+  const r=(await api("search?q="+encodeURIComponent(q))).results;
+  $("#view").innerHTML=`<h3>${r.length} risultati</h3>`+r.map(x=>`<div class="card item" data-id="${x.id}" data-k="${x.kind}"><b>${esc(x.title)}</b> <small>${esc(x.project)}</small><div>${hl(x.snippet)}</div></div>`).join("");
+  document.querySelectorAll("#view .item").forEach(e=>e.onclick=()=>open(e.dataset.id,e.dataset.k));
+}
+function showReport(r){
+  $("#view").innerHTML=`<div class="card"><h3>Importazione ${r.complete?'<span class="ok">completa ✓</span>':'<span class="warn">parziale ⚠</span>'}</h3>
+  <p>Formato: <b>${esc(r.format)}</b> · conversazioni trovate ${r.conversations_found} → nuove ${r.added}, aggiornate ${r.updated}, invariate ${r.unchanged}, mantenute ${r.kept_existing} · messaggi ${r.messages} · file ${r.files_stored}</p>
+  ${r.attachments_missing.length?`<p class="warn">Allegati citati ma NON presenti nell'export (non protetti): ${r.attachments_missing.length}</p><ul>${r.attachments_missing.slice(0,30).map(x=>`<li>${esc(x)}</li>`).join("")}</ul>`:""}
+  ${r.warnings.map(w=>`<p class="warn">${esc(w)}</p>`).join("")}</div>`;
+}
+async function showStatus(){
+  const s=await api("status"),st=s.stats,c=st.conversation||{count:0},f=st.file||{count:0};
+  const last=s.snapshots[0];
+  $("#view").innerHTML=`<h2>Stato dei backup</h2>
+  <div class="card"><h3 class="ok">Protetto nel vault cifrato</h3><p>${c.count} conversazioni · ${f.count} file (${((c.bytes||0)+(f.bytes||0))/1024|0} KB cifrati con AES-256-GCM)</p>
+  <p class="mut">Solo i contenuti già acquisiti sono coperti. Quanto non importato (nuovo lavoro dopo l'ultimo export, allegati assenti) <b>non è protetto</b>.</p></div>
+  <div class="card"><h3>Importazioni recenti</h3><table><tr><th>Quando</th><th>Origine</th><th>Conv.</th><th>Allegati mancanti</th></tr>${s.imports.map(i=>`<tr><td>${esc(i.at.slice(0,16))}</td><td>${esc(i.format)}</td><td>${i.conversations_found}</td><td class="${i.attachments_missing.length?"warn":"ok"}">${i.attachments_missing.length}</td></tr>`).join("")||"<tr><td colspan=4>Nessuna</td></tr>"}</table></div>
+  <div class="card"><h3>Integrità e snapshot</h3>
+  <p>Ultimo snapshot: ${last?esc(last.created)+(last.verified?' <span class="ok">verificato</span>':' <span class="bad">NON verificato</span>'):'<span class="warn">mai eseguito</span>'} (${s.snapshots.length} totali)</p>
+  <button id="bv">Verifica integrità</button> <button id="bs">Crea snapshot</button> <span id="act"></span></div>
+  <div class="card"><h3>Token provider</h3><p>${s.tokens.length?s.tokens.map(t=>esc(t.provider)+" (cifrato, "+esc(t.saved_at.slice(0,10))+")").join(", "):"Nessun token salvato."}</p>
+  <button id="br">Rimuovi tutti i token dal dispositivo</button></div>`;
+  $("#bv").onclick=async()=>{const r=await api("verify");$("#act").innerHTML=r.healthy?`<span class="ok">${r.ok}/${r.checked} elementi integri ✓</span>`:`<span class="bad">${r.corrupt.length} elementi corrotti!</span>`};
+  $("#bs").onclick=async()=>{const r=await post("snapshot");$("#act").textContent="Snapshot creato: "+r.path;setTimeout(showStatus,1500)};
+  $("#br").onclick=async()=>{if(confirm("Rimuovere i token?")){const r=await post("revoke-tokens");alert("Rimossi: "+r.removed);showStatus()}};
+}
+async function exportPkg(){
+  if(!confirm("Il pacchetto esportato NON è cifrato (Markdown + JSON). Continuare?"))return;
+  const r=await api("export",{raw:true});const b=await r.blob();const a=document.createElement("a");a.href=URL.createObjectURL(b);a.download="awv-export.zip";a.click();
+}
+boot();
+</script></body></html>

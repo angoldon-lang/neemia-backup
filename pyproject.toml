@@ -1,0 +1,19 @@
+[project]
+name = "ai-workspace-vault"
+version = "0.1.0"
+description = "Encrypted, provider-independent local vault for AI assistant work (AD Consulting S.p.A.)"
+requires-python = ">=3.10"
+dependencies = ["cryptography>=42"]
+
+[project.scripts]
+awv = "vault.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["vault"]
+
+[tool.setuptools.package-data]
+vault = ["web/*"]
